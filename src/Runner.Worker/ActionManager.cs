@@ -198,22 +198,35 @@ namespace GitHub.Runner.Worker
                 // Get the download info
                 var downloadInfos = await GetDownloadInfoAsync(executionContext, repositoryActions);
 
+                // Limit concurrency to 10
+                var semaphore = new SemaphoreSlim(10);
+
                 // Download each action
-                foreach (var action in repositoryActions)
+                var downloadTasks = repositoryActions.Select(async action =>
                 {
-                    var lookupKey = GetDownloadInfoLookupKey(action);
-                    if (string.IsNullOrEmpty(lookupKey))
+                    await semaphore.WaitAsync();
+                    try
                     {
-                        continue;
-                    }
+                        var lookupKey = GetDownloadInfoLookupKey(action);
+                        if (string.IsNullOrEmpty(lookupKey))
+                        {
+                            return;
+                        }
 
-                    if (!downloadInfos.TryGetValue(lookupKey, out var downloadInfo))
+                        if (!downloadInfos.TryGetValue(lookupKey, out var downloadInfo))
+                        {
+                            throw new Exception($"Missing download info for {lookupKey}");
+                        }
+
+                        await DownloadRepositoryActionAsync(executionContext, downloadInfo);
+                    }
+                    finally
                     {
-                        throw new Exception($"Missing download info for {lookupKey}");
+                        semaphore.Release();
                     }
+                }).ToList();
 
-                    await DownloadRepositoryActionAsync(executionContext, downloadInfo);
-                }
+                await Task.WhenAll(downloadTasks);
 
                 // More preparation based on content in the repository (action.yml)
                 foreach (var action in repositoryActions)
